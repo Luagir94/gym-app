@@ -1,6 +1,7 @@
 import { betterAuth } from 'better-auth';
 import { jwt } from 'better-auth/plugins';
 import { memoryAdapter } from 'better-auth/adapters/memory';
+import { PHASE_PRODUCTION_BUILD } from 'next/constants';
 import { checkUserCreateGate, checkSessionCreateGate, buildDefinePayload } from './auth-gate';
 
 /**
@@ -31,7 +32,7 @@ import { checkUserCreateGate, checkSessionCreateGate, buildDefinePayload } from 
 // Fail fast at runtime — do not allow a weak or missing secret.
 // Skip during Next.js static build phase (no real requests served yet).
 const secret = process.env.BETTER_AUTH_SECRET;
-if (process.env.NEXT_PHASE !== 'phase-production-build' && (!secret || secret.length < 32)) {
+if (process.env.NEXT_PHASE !== PHASE_PRODUCTION_BUILD && (!secret || secret.length < 32)) {
   throw new Error(
     'BETTER_AUTH_SECRET is missing or shorter than 32 characters. ' +
     'Generate one with: openssl rand -base64 32',
@@ -124,29 +125,11 @@ export const auth = betterAuth({
         before: async (
           newUser: { email: string; tenantId?: string | null; role?: string | null } & Record<string, unknown>,
         ) => {
-          // Resolve tenantId/role from the pre-registration store by email lookup.
-          // We derive these from the store — OAuth providers never send tenantId.
-          // The store key is `${tenantId}:${email.toLowerCase()}`.
-          // Because we don't yet have a Prisma DB (PR3), we use a simple lookup
-          // that requires the admin to have called addPreRegistration(email, tenantId).
-          // At this point we need the tenantId context — which won't come from the
-          // OAuth payload. In PR3 we query: SELECT tenantId FROM PreRegistration WHERE email=?
-          // For the spike: the pre-registration store is keyed by tenantId+email, so we
-          // need a way to look up by email alone. We expose a helper from the store.
-          const { lookupPreRegistrationByEmail } = await import('./pre-registration-store');
-          const registration = lookupPreRegistrationByEmail(newUser.email);
-
-          if (!registration) {
-            throw new Error(
-              `Email ${newUser.email} is not pre-registered. Contact your gym administrator.`,
-            );
-          }
-
-          const gated = await checkUserCreateGate(
-            newUser,
-            registration.tenantId,
-            registration.role ?? 'MEMBER',
-          );
+          // checkUserCreateGate is the single source of truth: it resolves
+          // tenantId/role from the pre-registration store by email lookup
+          // (OAuth providers never send tenantId) and throws on unknown emails.
+          // In PR3 the store becomes a Prisma PreRegistration table.
+          const gated = await checkUserCreateGate(newUser);
 
           return { data: gated };
         },
@@ -189,7 +172,12 @@ export const auth = betterAuth({
             return false;
           }
 
-          await checkSessionCreateGate(user.email, user.tenantId);
+          // Returning false blocks session creation cleanly (redirectOnError
+          // on the OAuth callback path); throwing would surface as a 500.
+          const allowed = await checkSessionCreateGate(user.email, user.tenantId);
+          if (!allowed) {
+            return false;
+          }
 
           // Return void (undefined) to allow session creation with original data.
         },

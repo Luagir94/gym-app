@@ -12,7 +12,10 @@
  * Fix 2  — definePayload: throw instead of emitting tenantId: null.
  */
 
-import { isEmailPreRegistered } from './pre-registration-store';
+import {
+  isEmailPreRegistered,
+  lookupPreRegistrationByEmail,
+} from './pre-registration-store';
 
 export interface UserCreateInput {
   email: string;
@@ -29,23 +32,18 @@ export interface GatedUserData extends UserCreateInput {
 /**
  * Gate for `databaseHooks.user.create.before`.
  *
- * Looks up the pre-registration entry BY EMAIL (normalized lowercase).
- * On match: injects tenantId and role from the pre-registration arguments.
+ * Single source of truth for the pre-registration check: looks up the
+ * entry BY EMAIL (normalized lowercase) — OAuth payloads never carry a
+ * tenantId, so the store is the only place it can come from.
+ * On match: returns the user data with tenantId and role injected.
  * On miss: throws so Better Auth blocks the user creation.
- *
- * @param userData - The user data object as received from OAuth (no tenantId in OAuth payloads).
- * @param tenantId - The tenantId resolved from the pre-registration store lookup.
- * @param role     - The role resolved from the pre-registration store lookup.
- * @returns The user data object with tenantId and role injected.
  */
 export async function checkUserCreateGate(
   userData: UserCreateInput,
-  tenantId: string | null | undefined,
-  role: string | null | undefined,
 ): Promise<GatedUserData> {
-  const email = userData.email.toLowerCase();
+  const registration = lookupPreRegistrationByEmail(userData.email);
 
-  if (!tenantId || !isEmailPreRegistered(email, tenantId)) {
+  if (!registration) {
     throw new Error(
       `Email ${userData.email} is not pre-registered. Contact your gym administrator.`,
     );
@@ -53,8 +51,8 @@ export async function checkUserCreateGate(
 
   return {
     ...userData,
-    tenantId,
-    role: role ?? 'MEMBER',
+    tenantId: registration.tenantId,
+    role: registration.role ?? 'MEMBER',
   };
 }
 
@@ -62,25 +60,22 @@ export async function checkUserCreateGate(
  * Gate for `databaseHooks.session.create.before`.
  *
  * Re-validates on every sign-in that the user's email is still
- * pre-registered/active for their tenant. Blocks session creation
- * when a member has been deactivated (their entry removed from the store).
+ * pre-registered/active for their tenant. Returns false to block
+ * session creation when a member has been deactivated — Better Auth
+ * turns `return false` into a clean block (redirectOnError on the
+ * OAuth callback path), whereas a thrown plain Error surfaces as a 500.
  *
- * @param email    - The user's email address.
- * @param tenantId - The user's tenantId from the stored user record.
+ * @returns true when the session may be created, false to block it.
  */
 export async function checkSessionCreateGate(
   email: string,
   tenantId: string | null | undefined,
-): Promise<void> {
+): Promise<boolean> {
   if (!tenantId) {
-    throw new Error('No tenant context for session creation');
+    return false;
   }
 
-  if (!isEmailPreRegistered(email.toLowerCase(), tenantId)) {
-    throw new Error(
-      `Email ${email} is not pre-registered. Access revoked.`,
-    );
-  }
+  return isEmailPreRegistered(email.toLowerCase(), tenantId);
 }
 
 export interface DefinePayloadInput {

@@ -26,32 +26,42 @@ describe('auth-gate — user.create.before logic', () => {
   it('injects tenantId and role from pre-registration when email matches', async () => {
     addPreRegistration('alice@example.com', 'tenant-a');
 
-    const result = await checkUserCreateGate({ email: 'alice@example.com' }, 'tenant-a', 'MEMBER');
+    const result = await checkUserCreateGate({ email: 'alice@example.com' });
 
     expect(result.tenantId).toBe('tenant-a');
     expect(result.role).toBe('MEMBER');
     expect(result.email).toBe('alice@example.com');
   });
 
+  it('injects the role stored in the pre-registration entry', async () => {
+    addPreRegistration('admin@example.com', 'tenant-a', 'ADMIN');
+
+    const result = await checkUserCreateGate({ email: 'admin@example.com' });
+
+    expect(result.role).toBe('ADMIN');
+  });
+
   it('throws when email is not pre-registered (unknown user)', async () => {
     await expect(
-      checkUserCreateGate({ email: 'unknown@example.com' }, null, null),
+      checkUserCreateGate({ email: 'unknown@example.com' }),
     ).rejects.toThrow('not pre-registered');
   });
 
-  it('throws when email is pre-registered for a different tenant only', async () => {
+  it('resolves the tenant from the store, never from the caller', async () => {
+    // Email is globally unique in the MVP — the store is the single source
+    // of tenant truth, since OAuth payloads never carry a tenantId.
     addPreRegistration('alice@example.com', 'tenant-b');
 
-    await expect(
-      checkUserCreateGate({ email: 'alice@example.com' }, 'tenant-a', 'MEMBER'),
-    ).rejects.toThrow('not pre-registered');
+    const result = await checkUserCreateGate({ email: 'alice@example.com' });
+
+    expect(result.tenantId).toBe('tenant-b');
   });
 
   it('normalizes email to lowercase before lookup', async () => {
     addPreRegistration('alice@example.com', 'tenant-a');
 
     // Incoming email from OAuth might be mixed-case
-    const result = await checkUserCreateGate({ email: 'ALICE@example.com' }, 'tenant-a', 'MEMBER');
+    const result = await checkUserCreateGate({ email: 'ALICE@example.com' });
 
     expect(result.tenantId).toBe('tenant-a');
     expect(result.email).toBe('ALICE@example.com');
@@ -63,31 +73,42 @@ describe('auth-gate — session.create.before logic', () => {
     clearAllRegistrations();
   });
 
-  it('allows session creation when user email is still pre-registered', async () => {
+  // The session gate returns a boolean instead of throwing: Better Auth's
+  // database hooks treat `return false` as a clean block (redirectOnError on
+  // the OAuth callback path), while a thrown plain Error surfaces as a 500.
+
+  it('returns true when user email is still pre-registered', async () => {
     addPreRegistration('alice@example.com', 'tenant-a');
 
-    // Should not throw
     await expect(
       checkSessionCreateGate('alice@example.com', 'tenant-a'),
-    ).resolves.toBeUndefined();
+    ).resolves.toBe(true);
   });
 
-  it('throws when user email has been removed from pre-registration (deactivated member)', async () => {
+  it('returns false when user email has been removed from pre-registration (deactivated member)', async () => {
     // alice was pre-registered but has since been removed (deactivated)
     // No addPreRegistration call — store is empty
 
     await expect(
       checkSessionCreateGate('alice@example.com', 'tenant-a'),
-    ).rejects.toThrow('not pre-registered');
+    ).resolves.toBe(false);
   });
 
-  it('throws when user has no tenantId stored (incomplete user record)', async () => {
+  it('returns false when user has no tenantId stored (incomplete user record)', async () => {
     addPreRegistration('alice@example.com', 'tenant-a');
 
     // tenantId null simulates an incomplete user (should never create a session)
     await expect(
       checkSessionCreateGate('alice@example.com', null),
-    ).rejects.toThrow('No tenant context');
+    ).resolves.toBe(false);
+  });
+
+  it('returns false when the email is registered for a different tenant than the user record', async () => {
+    addPreRegistration('alice@example.com', 'tenant-b');
+
+    await expect(
+      checkSessionCreateGate('alice@example.com', 'tenant-a'),
+    ).resolves.toBe(false);
   });
 });
 
