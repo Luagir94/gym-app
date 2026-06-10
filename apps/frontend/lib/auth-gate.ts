@@ -41,7 +41,7 @@ export interface GatedUserData extends UserCreateInput {
 export async function checkUserCreateGate(
   userData: UserCreateInput,
 ): Promise<GatedUserData> {
-  const registration = lookupPreRegistrationByEmail(userData.email);
+  const registration = await lookupPreRegistrationByEmail(userData.email);
 
   if (!registration) {
     throw new Error(

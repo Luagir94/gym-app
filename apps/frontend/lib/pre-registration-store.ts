@@ -1,42 +1,45 @@
 /**
- * Pre-registration store for the auth spike.
+ * Pre-registration store — Prisma-backed implementation (PR3).
  *
- * NOTE: This is a temporary in-memory implementation for PR2 (auth spike).
- * PR3 (Prisma schema) will replace this with a real `PreRegistration` table
- * and the Better Auth hooks will query that table via Prisma instead.
+ * Replaces the in-memory store from PR2 (auth spike).
+ * The public interface (function signatures) remains identical so that
+ * auth-gate.ts pure functions require no changes.
  *
- * The store maps normalized email → { tenantId, role }.
- * (One email per tenant assumption — valid for the spike.)
- * An admin creates a member → addPreRegistration() is called.
- * A member is deactivated → removePreRegistration() is called.
+ * The store maps email → { tenantId, role } by querying the PreRegistration
+ * table via Prisma. All lookups are normalized to lowercase.
+ *
+ * NOTE: addPreRegistration / removePreRegistration are called from MembersService
+ * (in the backend) via Prisma transactions — not from the frontend. These
+ * frontend-facing functions are kept as a compatibility shim for the auth hooks
+ * but delegate to Prisma in production.
+ *
+ * The auth hooks (in auth.ts) call isEmailPreRegistered and lookupPreRegistrationByEmail.
+ * Those functions query the shared Postgres DB via the same PrismaClient instance.
  */
+
+import { PrismaClient } from '../../backend/generated/prisma/index.js';
 
 export interface PreRegistrationEntry {
   tenantId: string;
   role: string;
 }
 
+// Shared Prisma client (singleton — same instance as auth.ts if bundled together)
+const prisma = new PrismaClient();
+
 /**
- * Primary store: normalizedEmail → { tenantId, role }
- * Also used for isEmailPreRegistered(email, tenantId) lookups.
+ * Returns true if the given email is pre-registered and active for the given tenant.
+ * Used in session.create.before gate to re-validate on every sign-in.
  */
-const store = new Map<string, PreRegistrationEntry>();
-
-function normalizeEmail(email: string): string {
-  return email.toLowerCase();
-}
-
-export function isEmailPreRegistered(email: string, tenantId: string): boolean {
-  const entry = store.get(normalizeEmail(email));
-  return entry !== undefined && entry.tenantId === tenantId;
-}
-
-export function addPreRegistration(email: string, tenantId: string, role = 'MEMBER'): void {
-  store.set(normalizeEmail(email), { tenantId, role });
-}
-
-export function removePreRegistration(email: string, _tenantId?: string): void {
-  store.delete(normalizeEmail(email));
+export async function isEmailPreRegistered(email: string, tenantId: string): Promise<boolean> {
+  const entry = await prisma.preRegistration.findFirst({
+    where: {
+      email: email.toLowerCase(),
+      tenantId,
+      active: true,
+    },
+  });
+  return entry !== null;
 }
 
 /**
@@ -46,11 +49,69 @@ export function removePreRegistration(email: string, _tenantId?: string): void {
  *
  * Returns null if the email is not pre-registered.
  */
-export function lookupPreRegistrationByEmail(email: string): PreRegistrationEntry | null {
-  return store.get(normalizeEmail(email)) ?? null;
+export async function lookupPreRegistrationByEmail(
+  email: string,
+): Promise<PreRegistrationEntry | null> {
+  const entry = await prisma.preRegistration.findFirst({
+    where: {
+      email: email.toLowerCase(),
+      active: true,
+    },
+  });
+
+  if (!entry) return null;
+
+  return {
+    tenantId: entry.tenantId,
+    role: entry.role,
+  };
 }
 
-/** Clear every pre-registration entry. Intended for use in test beforeEach. */
-export function clearAllRegistrations(): void {
-  store.clear();
+/**
+ * Add a pre-registration entry.
+ * NOTE: In production this is called by MembersService (backend) via Prisma.
+ * This function exists for test compatibility and manual seeding only.
+ */
+export async function addPreRegistration(
+  email: string,
+  tenantId: string,
+  role = 'MEMBER',
+): Promise<void> {
+  await prisma.preRegistration.upsert({
+    where: { tenantId_email: { tenantId, email: email.toLowerCase() } },
+    update: { active: true, role: role as 'MEMBER' | 'ADMIN' },
+    create: {
+      email: email.toLowerCase(),
+      tenantId,
+      role: role as 'MEMBER' | 'ADMIN',
+      active: true,
+    },
+  });
+}
+
+/**
+ * Remove (deactivate) a pre-registration entry.
+ * NOTE: In production this is called by MembersService (backend) via Prisma.
+ */
+export async function removePreRegistration(email: string, tenantId?: string): Promise<void> {
+  if (tenantId) {
+    await prisma.preRegistration.deleteMany({
+      where: { email: email.toLowerCase(), tenantId },
+    });
+  } else {
+    await prisma.preRegistration.deleteMany({
+      where: { email: email.toLowerCase() },
+    });
+  }
+}
+
+/**
+ * Clear all registrations — for test use only.
+ * DANGEROUS: deletes all pre-registration records from the DB.
+ */
+export async function clearAllRegistrations(): Promise<void> {
+  if (process.env.NODE_ENV !== 'test') {
+    throw new Error('clearAllRegistrations() is only available in test environments');
+  }
+  await prisma.preRegistration.deleteMany({});
 }

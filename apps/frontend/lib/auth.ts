@@ -1,6 +1,7 @@
 import { betterAuth } from 'better-auth';
 import { jwt } from 'better-auth/plugins';
-import { memoryAdapter } from 'better-auth/adapters/memory';
+import { prismaAdapter } from 'better-auth/adapters/prisma';
+import { PrismaClient } from '../../backend/generated/prisma/index.js';
 import { PHASE_PRODUCTION_BUILD } from 'next/constants';
 import { checkUserCreateGate, checkSessionCreateGate, buildDefinePayload } from './auth-gate';
 
@@ -16,11 +17,10 @@ import { checkUserCreateGate, checkSessionCreateGate, buildDefinePayload } from 
  * - JWT default signing alg: EdDSA (verified in sign.mjs / key alg field)
  * - JWT default iss/aud: baseURL origin (verified in sign.mjs lines 16-20)
  *
- * ADAPTER NOTE (PR2 spike):
- * Using memory adapter for the spike. PR3 will replace this with:
- *   import { PrismaClient } from '@prisma/client';
- *   import { prismaAdapter } from 'better-auth/adapters/prisma';
- *   database: prismaAdapter(prisma, { provider: 'postgresql' })
+ * ADAPTER NOTE (PR3):
+ * Now using prismaAdapter backed by the PrismaClient generated in apps/backend.
+ * Schema lives in apps/backend/prisma/schema.prisma.
+ * Generated client imported from apps/backend/generated/prisma/.
  *
  * GATE DESIGN (PR2):
  * - user.create.before: looks up email in pre-registration store, injects tenantId/role.
@@ -39,15 +39,18 @@ if (process.env.NEXT_PHASE !== PHASE_PRODUCTION_BUILD && (!secret || secret.leng
   );
 }
 
-// In-memory DB for Better Auth (spike only)
-const db: Record<string, any[]> = {};
+// Prisma client instance (singleton) for Better Auth adapter
+// Shared with the backend's generated client (same schema, same DB).
+const prisma = new PrismaClient();
 
 export const auth = betterAuth({
   baseURL: process.env.BETTER_AUTH_URL ?? 'http://localhost:3000',
   // During build phase secret is undefined; betterAuth will not be called for real requests.
   secret: secret ?? 'build-phase-placeholder-not-used-at-runtime',
 
-  database: memoryAdapter(db),
+  database: prismaAdapter(prisma, {
+    provider: 'postgresql',
+  }),
 
   socialProviders: {
     google: {

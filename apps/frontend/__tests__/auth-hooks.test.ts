@@ -1,7 +1,23 @@
-// Tests for the pre-registration gate logic.
-// The gate is implemented as a pure function that checks whether
-// a given email is in the pre-registration store. This is extracted
-// for easy testing without needing a live Better Auth instance.
+/**
+ * Tests for the pre-registration store — Prisma-backed implementation (PR3).
+ *
+ * The store functions are now async (Prisma queries).
+ * PrismaClient is mocked to avoid needing a real DB connection.
+ */
+
+// jest.mock is hoisted — use __mocks approach to share references
+jest.mock('../../backend/generated/prisma/index.js', () => {
+  const findFirst = jest.fn();
+  const upsert = jest.fn().mockResolvedValue({});
+  const deleteMany = jest.fn().mockResolvedValue({ count: 1 });
+  const MockPrismaClient = jest.fn().mockImplementation(() => ({
+    preRegistration: { findFirst, upsert, deleteMany },
+    $connect: jest.fn(),
+    $disconnect: jest.fn(),
+  }));
+  (MockPrismaClient as any).__ops = { findFirst, upsert, deleteMany };
+  return { PrismaClient: MockPrismaClient };
+});
 
 import {
   isEmailPreRegistered,
@@ -10,57 +26,93 @@ import {
   clearAllRegistrations,
 } from '../lib/pre-registration-store';
 
-describe('Pre-registration store', () => {
+function getOps() {
+  const { PrismaClient } = jest.requireMock('../../backend/generated/prisma/index.js');
+  return (PrismaClient as any).__ops as {
+    findFirst: jest.Mock;
+    upsert: jest.Mock;
+    deleteMany: jest.Mock;
+  };
+}
+
+function preRegEntry(email: string, tenantId: string, role = 'MEMBER', active = true) {
+  return { id: 'p1', email, tenantId, role, active, createdAt: new Date(), updatedAt: new Date() };
+}
+
+describe('Pre-registration store (Prisma-backed)', () => {
   beforeEach(() => {
-    // Reset ALL state between tests — clearAllRegistrations() is the correct API
-    clearAllRegistrations();
+    const ops = getOps();
+    ops.findFirst.mockReset();
+    ops.upsert.mockReset().mockResolvedValue({});
+    ops.deleteMany.mockReset().mockResolvedValue({ count: 1 });
+    process.env.NODE_ENV = 'test';
   });
 
-  it('returns true when email+tenantId is pre-registered', () => {
-    addPreRegistration('alice@example.com', 'tenant-a');
+  it('returns true when email+tenantId is pre-registered and active', async () => {
+    getOps().findFirst.mockResolvedValue(preRegEntry('alice@example.com', 'tenant-a'));
 
-    expect(isEmailPreRegistered('alice@example.com', 'tenant-a')).toBe(true);
+    const result = await isEmailPreRegistered('alice@example.com', 'tenant-a');
+
+    expect(result).toBe(true);
+    expect(getOps().findFirst).toHaveBeenCalledWith({
+      where: { email: 'alice@example.com', tenantId: 'tenant-a', active: true },
+    });
   });
 
-  it('returns false when email is not pre-registered in any tenant', () => {
-    expect(isEmailPreRegistered('bob@example.com', 'tenant-a')).toBe(false);
+  it('returns false when email is not pre-registered in any tenant', async () => {
+    getOps().findFirst.mockResolvedValue(null);
+
+    const result = await isEmailPreRegistered('bob@example.com', 'tenant-a');
+
+    expect(result).toBe(false);
   });
 
-  it('returns false when email is pre-registered in a different tenant', () => {
-    addPreRegistration('carol@example.com', 'tenant-b');
+  it('returns false when email is pre-registered in a different tenant', async () => {
+    getOps().findFirst.mockResolvedValue(null);
 
-    // carol is in tenant-b but NOT tenant-a
-    expect(isEmailPreRegistered('carol@example.com', 'tenant-a')).toBe(false);
+    const result = await isEmailPreRegistered('carol@example.com', 'tenant-a');
+
+    expect(result).toBe(false);
   });
 
-  it('returns true for the correct tenant and false for a different tenant (isolation)', () => {
-    addPreRegistration('carol@example.com', 'tenant-b');
+  it('normalizes email case — uppercase lookup matches lowercase pre-reg', async () => {
+    getOps().findFirst.mockResolvedValue(preRegEntry('alice@example.com', 'tenant-a'));
 
-    expect(isEmailPreRegistered('carol@example.com', 'tenant-b')).toBe(true);
-    expect(isEmailPreRegistered('carol@example.com', 'tenant-a')).toBe(false);
+    const result = await isEmailPreRegistered('ALICE@example.com', 'tenant-a');
+
+    expect(result).toBe(true);
+    // Verifies normalization happened before the DB call
+    expect(getOps().findFirst).toHaveBeenCalledWith({
+      where: { email: 'alice@example.com', tenantId: 'tenant-a', active: true },
+    });
   });
 
-  it('normalizes email case — ALICE@example.com registered matches alice@example.com lookup', () => {
-    // Register with uppercase
-    addPreRegistration('ALICE@example.com', 'tenant-a');
+  it('addPreRegistration() calls upsert with normalized email', async () => {
+    await addPreRegistration('ALICE@example.com', 'tenant-a', 'MEMBER');
 
-    // Lookup with lowercase must still match
-    expect(isEmailPreRegistered('alice@example.com', 'tenant-a')).toBe(true);
+    expect(getOps().upsert).toHaveBeenCalledWith({
+      where: { tenantId_email: { tenantId: 'tenant-a', email: 'alice@example.com' } },
+      update: { active: true, role: 'MEMBER' },
+      create: {
+        email: 'alice@example.com',
+        tenantId: 'tenant-a',
+        role: 'MEMBER',
+        active: true,
+      },
+    });
   });
 
-  it('normalizes email case — lowercase registered matches UPPERCASE lookup', () => {
-    addPreRegistration('alice@example.com', 'tenant-a');
+  it('removePreRegistration() calls deleteMany with email and tenantId', async () => {
+    await removePreRegistration('alice@example.com', 'tenant-a');
 
-    expect(isEmailPreRegistered('ALICE@example.com', 'tenant-a')).toBe(true);
+    expect(getOps().deleteMany).toHaveBeenCalledWith({
+      where: { email: 'alice@example.com', tenantId: 'tenant-a' },
+    });
   });
 
-  it('clearAllRegistrations() removes every entry across all tenants', () => {
-    addPreRegistration('alice@example.com', 'tenant-a');
-    addPreRegistration('bob@example.com', 'tenant-b');
+  it('clearAllRegistrations() calls deleteMany({}) in test environment', async () => {
+    await clearAllRegistrations();
 
-    clearAllRegistrations();
-
-    expect(isEmailPreRegistered('alice@example.com', 'tenant-a')).toBe(false);
-    expect(isEmailPreRegistered('bob@example.com', 'tenant-b')).toBe(false);
+    expect(getOps().deleteMany).toHaveBeenCalledWith({});
   });
 });
