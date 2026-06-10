@@ -1,15 +1,14 @@
-version: '3.9'
-
 services:
   postgres:
     image: postgres:16-alpine
     container_name: gym_postgres
     environment:
+      # DEV ONLY - do not use these credentials outside local development
       POSTGRES_USER: gym
       POSTGRES_PASSWORD: gym_password
       POSTGRES_DB: gym_dev
     ports:
-      - '5432:5432'
+      - '127.0.0.1:5432:5432'
     volumes:
       - gym_postgres_data:/var/lib/postgresql/data
       - ./docker/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql

@@ -2,9 +2,8 @@
 .atl/
 
 # Environment variables — never commit secrets
-.env
-.env.local
-.env.*.local
+.env*
+!.env.example
 
 # Node / Bun
 node_modules/
@@ -17,6 +16,9 @@ apps/frontend/out/
 
 # NestJS build
 apps/backend/dist/
+
+# Shared package build output
+packages/shared/dist/
 
 # Coverage
 coverage/
