@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
 import { Strategy, ExtractJwt, StrategyOptionsWithoutRequest } from 'passport-jwt';
 import { passportJwtSecret } from 'jwks-rsa';
+import type { Algorithm } from 'jsonwebtoken';
 
 export interface JwtPayload {
   sub: string;
@@ -19,7 +20,23 @@ export interface AuthenticatedUser {
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
   constructor() {
-    const nextUrl = process.env.NEXT_URL ?? 'http://localhost:3000';
+    /**
+     * Fix 4 — Unified issuer env var: BETTER_AUTH_URL (not NEXT_URL).
+     * Better Auth sets iss and aud to the baseURL origin by default.
+     * Verified in better-auth/dist/plugins/jwt/sign.mjs lines 16-20:
+     *   const baseURLOrigin = typeof ctx.context.options.baseURL === "string"
+     *     ? ctx.context.options.baseURL : "";
+     *   const defaultIss = options?.jwt?.issuer ?? baseURLOrigin;
+     *   const defaultAud = options?.jwt?.audience ?? baseURLOrigin;
+     *
+     * Fix 6 — Narrow algorithms to ['EdDSA'] only.
+     * Better Auth JWT plugin signs with EdDSA by default.
+     * Verified in sign.mjs line 40:
+     *   const alg = key.alg ?? options?.jwks?.keyPairConfig?.alg ?? "EdDSA";
+     *
+     * Fix 3 — Add audience validation matching the issuer (same baseURL origin).
+     */
+    const betterAuthUrl = process.env.BETTER_AUTH_URL ?? 'http://localhost:3000';
 
     const options: StrategyOptionsWithoutRequest = {
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
@@ -27,10 +44,15 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
         cache: true,
         rateLimit: true,
         jwksRequestsPerMinute: 5,
-        jwksUri: `${nextUrl}/api/auth/jwks`,
+        jwksUri: `${betterAuthUrl}/api/auth/jwks`,
       }),
-      issuer: nextUrl,
-      algorithms: ['EdDSA', 'RS256', 'ES256'],
+      issuer: betterAuthUrl,
+      audience: betterAuthUrl,
+      // EdDSA is Better Auth's default signing algorithm (verified in sign.mjs:40).
+      // @types/jsonwebtoken does not include EdDSA in its Algorithm union (as of 9.x),
+      // so we use a double cast. The runtime value is correct — passport-jwt forwards
+      // this string directly to jose which accepts EdDSA.
+      algorithms: ['EdDSA'] as unknown as Algorithm[],
     };
 
     super(options);
@@ -39,9 +61,11 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
   /**
    * Called after passport-jwt validates the JWT signature via JWKS.
    * Returns the user object attached to request.user, or undefined to reject.
+   *
+   * Fix 9: Reject when sub is missing or empty string (no valid subject claim).
    */
   async validate(payload: JwtPayload): Promise<AuthenticatedUser | undefined> {
-    if (!payload.tenantId || !payload.role) {
+    if (!payload.sub || !payload.tenantId || !payload.role) {
       return undefined;
     }
 
