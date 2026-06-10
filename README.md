@@ -29,10 +29,14 @@ bun install
 ### 2. Configure environment variables
 
 ```bash
+# macOS / Linux
 cp .env.example .env
-# Edit .env and fill in your values:
-# - GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET (from Google Cloud Console)
-# - BETTER_AUTH_SECRET (random string, >= 32 chars)
+
+# Windows (Command Prompt)
+copy .env.example .env
+
+# Windows (PowerShell)
+Copy-Item .env.example .env
 ```
 
 ### 3. Start the database
@@ -43,21 +47,7 @@ docker compose up -d
 # Creates both gym_dev and gym_test databases
 ```
 
-### 4. Run database migrations (Phase 3)
-
-```bash
-cd apps/backend
-npx prisma migrate dev
-```
-
-### 5. Seed demo data (Phase 3)
-
-```bash
-cd apps/backend
-npm run seed
-```
-
-### 6. Start development servers
+### 4. Start development servers
 
 ```bash
 # Frontend (http://localhost:3000)
