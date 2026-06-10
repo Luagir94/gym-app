@@ -1,0 +1,268 @@
+// Prisma schema for gym-mvp
+// Design: shared-schema multitenancy — every tenant-scoped table carries tenantId
+// Better Auth 1.6.15 tables (user/session/account/verification/jwks) are included here
+// and mapped to the same Postgres DB via the prisma adapter.
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─── Tenancy ─────────────────────────────────────────────────────────────────
+
+model Tenant {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  users            User[]
+  activities       Activity[]
+  exercises        Exercise[]
+  routines         Routine[]
+  payments         Payment[]
+  preRegistrations PreRegistration[]
+
+  @@map("tenants")
+}
+
+// ─── Users / Members ─────────────────────────────────────────────────────────
+
+enum UserRole {
+  ADMIN
+  MEMBER
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+}
+
+/// Domain user. Also serves as Better Auth's user model (via additionalFields mapping).
+model User {
+  id        String     @id @default(cuid())
+  tenantId  String
+  email     String     @unique // globally unique per MVP decision
+  name      String
+  role      UserRole   @default(MEMBER)
+  status    UserStatus @default(ACTIVE)
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  // Better Auth required fields
+  emailVerified Boolean @default(false)
+  image         String?
+
+  // Relations
+  tenant             Tenant              @relation(fields: [tenantId], references: [id])
+  sessions           Session[]
+  accounts           Account[]
+  enrollments        Enrollment[]
+  routineAssignments RoutineAssignment[]
+  payments           Payment[]
+
+  @@map("users")
+}
+
+// ─── Pre-Registration ────────────────────────────────────────────────────────
+
+/// Email allowlist per tenant. Controls who may sign in via Google.
+/// Created when an admin registers a member. Deleted/deactivated on baja.
+model PreRegistration {
+  id        String   @id @default(cuid())
+  tenantId  String
+  email     String
+  role      UserRole @default(MEMBER)
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@unique([tenantId, email])
+  @@map("pre_registrations")
+}
+
+// ─── Better Auth tables ───────────────────────────────────────────────────────
+// Required by Better Auth prisma adapter (1.6.15).
+// Names, fields and casing match the adapter's default mapping.
+
+/// Better Auth session model
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+/// Better Auth account model (OAuth provider accounts linked to a user)
+model Account {
+  id                   String    @id @default(cuid())
+  userId               String
+  accountId            String
+  providerId           String
+  accessToken          String?
+  refreshToken         String?
+  idToken              String?
+  accessTokenExpiresAt DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                String?
+  password             String?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("accounts")
+}
+
+/// Better Auth verification model (email/OTP verification tokens)
+model Verification {
+  id         String   @id @default(cuid())
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@map("verifications")
+}
+
+/// Better Auth JWKS model (stores the EdDSA signing key pair for the JWT plugin)
+model Jwks {
+  id         String   @id @default(cuid())
+  publicKey  String
+  privateKey String
+  createdAt  DateTime @default(now())
+
+  @@map("jwks")
+}
+
+// ─── Activities ───────────────────────────────────────────────────────────────
+
+model Activity {
+  id          String   @id @default(cuid())
+  tenantId    String
+  name        String
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenant      Tenant       @relation(fields: [tenantId], references: [id])
+  enrollments Enrollment[]
+  routines    Routine[]
+
+  @@unique([tenantId, name])
+  @@map("activities")
+}
+
+model Enrollment {
+  id         String   @id @default(cuid())
+  userId     String
+  activityId String
+  createdAt  DateTime @default(now())
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  activity Activity @relation(fields: [activityId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, activityId])
+  @@map("enrollments")
+}
+
+// ─── Exercises ────────────────────────────────────────────────────────────────
+
+model Exercise {
+  id        String   @id @default(cuid())
+  tenantId  String
+  name      String
+  videoUrl  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant       Tenant        @relation(fields: [tenantId], references: [id])
+  routineItems RoutineItem[]
+
+  @@unique([tenantId, name])
+  @@map("exercises")
+}
+
+// ─── Routines ─────────────────────────────────────────────────────────────────
+
+model Routine {
+  id         String   @id @default(cuid())
+  tenantId   String
+  activityId String
+  name       String
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  tenant      Tenant              @relation(fields: [tenantId], references: [id])
+  activity    Activity            @relation(fields: [activityId], references: [id])
+  items       RoutineItem[]
+  assignments RoutineAssignment[]
+
+  @@map("routines")
+}
+
+model RoutineItem {
+  id          String   @id @default(cuid())
+  routineId   String
+  exerciseId  String
+  reps        Int
+  weight      Float?
+  durationSec Int?
+  order       Int      @default(0)
+  createdAt   DateTime @default(now())
+
+  routine  Routine  @relation(fields: [routineId], references: [id], onDelete: Cascade)
+  exercise Exercise @relation(fields: [exerciseId], references: [id])
+
+  @@map("routine_items")
+}
+
+model RoutineAssignment {
+  id        String   @id @default(cuid())
+  routineId String
+  userId    String
+  createdAt DateTime @default(now())
+
+  routine Routine @relation(fields: [routineId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([routineId, userId])
+  @@map("routine_assignments")
+}
+
+// ─── Payments ─────────────────────────────────────────────────────────────────
+
+model Payment {
+  id          String   @id @default(cuid())
+  tenantId    String
+  userId      String
+  paidAt      DateTime
+  periodStart DateTime
+  periodEnd   DateTime
+  amount      Float?
+  note        String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  user   User   @relation(fields: [userId], references: [id])
+
+  @@map("payments")
+}
