@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "resolvePackageJsonExports": false,
+    "paths": {
+      "@gym/shared": ["../../packages/shared/src/index.ts"]
+    }
+  }
+}
