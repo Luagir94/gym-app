@@ -23,7 +23,7 @@ const db: Record<string, any[]> = {};
 // TypeScript must accept this without errors for the spike to PASS.
 const testAuth = betterAuth({
   baseURL: 'http://localhost:3000',
-  secret: 'test-secret',
+  secret: 'spike-test-secret-at-least-32-chars-long',
   database: memoryAdapter(db),
   plugins: [
     jwt({

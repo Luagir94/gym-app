@@ -35,9 +35,12 @@ export async function middleware(request: NextRequest) {
     request.cookies.get('__Secure-better-auth.session_token')?.value;
 
   if (!sessionToken) {
-    return NextResponse.redirect(new URL('/login', request.url));
+    // Use request.nextUrl.origin to build the redirect, avoiding open-redirect
+    // via a manipulated Host header in self-hosted setups.
+    return NextResponse.redirect(new URL('/login', request.nextUrl.origin));
   }
 
+  // TODO(PR6): validate session server-side — cookie presence is NOT auth.
   // Role-based routing will be fully implemented in PR6 when we have
   // server-side session validation. For the spike, the session presence
   // is sufficient to prove the middleware wiring.
