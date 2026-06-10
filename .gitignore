@@ -1,2 +1,28 @@
 # Local AI runtime state
 .atl/
+
+# Environment variables — never commit secrets
+.env
+.env.local
+.env.*.local
+
+# Node / Bun
+node_modules/
+.pnp
+.pnp.js
+
+# Next.js
+apps/frontend/.next/
+apps/frontend/out/
+
+# NestJS build
+apps/backend/dist/
+
+# Coverage
+coverage/
+*.lcov
+
+# Misc
+.DS_Store
+*.tsbuildinfo
+
