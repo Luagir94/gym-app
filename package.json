@@ -1,0 +1,17 @@
+{
+  "name": "gym-app",
+  "private": true,
+  "packageManager": "bun@1.3.10",
+  "engines": {
+    "node": ">=20"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "bun run --filter '*' dev",
+    "build": "bun run --filter '*' build",
+    "test": "bun run --filter '*' test"
+  }
+}
